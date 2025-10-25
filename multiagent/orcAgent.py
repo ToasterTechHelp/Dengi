@@ -1,121 +1,198 @@
-# ============================
-# Dengi Orchestrator Agent
-# ============================
-# This is the main coordinator for Dengi.
-# It reads logs, detects errors, classifies them,
-# and delegates them to specialized mock agents (backend, frontend, infra).
-
-import os
-import re
-import time
+# orcAgent.py
 import json
-from typing import List, Dict, Any
+import re
+from typing import Any, Dict, Optional
+from google.genai import types
 
+JSON_DECISION_SCHEMA = """\
+Return ONLY a minified JSON object with this exact schema:
+{"decision":"backend|frontend|infra"}"""
+
+JSON_PATCH_SCHEMA = """\
+Return ONLY a minified JSON object with this schema:
+{
+  "summary": "one-sentence description of the fix",
+  "files": [
+    {
+      "path": "relative/path/to/file.ext",
+      "patch": "unified diff or full file replacement instructions; MUST be directly applicable by a developer"
+    }
+  ],
+  "patch": "optional unified diff spanning multiple files if you prefer",
+  "notes": "optional extra context for the reviewer, keep short"
+}
+Do not include markdown fences or extra commentary. Output a single JSON object on one line.
+"""
 
 class OrchestratorAgent:
-    def __init__(self, codebase_path: str, log_path: str):
-        self.codebase_path = codebase_path
-        self.log_path = log_path
+    def __init__(self, backend_runner, frontend_runner, infra_runner, dengi_runner, user_id: str, session_id: str):
+        self.runners = {
+            "backend": backend_runner,
+            "frontend": frontend_runner,
+            "infra": infra_runner,
+        }
+        self.dengi_runner = dengi_runner
+        self.user_id = user_id
+        self.session_id = session_id
 
-        # Mock sub-agents for demo purposes
-        self.sub_agents = {
-            'backend': self._mock_backend_agent,
-            'frontend': self._mock_frontend_agent,
-            'infra': self._mock_infra_agent
+    async def process(self, log: str) -> Dict[str, Any]:
+        """
+        1) Ask Dengi which specialist should handle this log (JSON decision).
+        2) Ask the chosen specialist for a JSON patch plan.
+        3) Return a single structured dict ready for GitHub PR creation.
+        """
+        # 1) Decide specialist
+        decision_prompt = self._build_decision_prompt(log)
+        decision_text = await self._call_runner(self.dengi_runner, decision_prompt)
+        decision = self._parse_decision(decision_text) or "backend"  # safe fallback
+
+        # 2) Get specialist patch JSON
+        specialist_runner = self.runners.get(decision, self.runners["backend"])
+        patch_prompt = self._build_patch_prompt(decision, log)
+        patch_text = await self._call_runner(specialist_runner, patch_prompt)
+        patch_json = self._safe_json(patch_text) or {
+            "summary": "No structured patch returned.",
+            "files": [],
+            "notes": "Specialist returned empty/invalid JSON."
+        }
+
+        # 3) Combined result (what you’ll hand to your GitHub step)
+        return {
+            "chosen_agent": decision,
+            "original_log": log,
+            "patch_plan": patch_json  # strictly JSON per schema
         }
 
     # ---------------------------
-    # Core Functions
+    # Prompt builders
     # ---------------------------
+    def _build_decision_prompt(self, log: str) -> str:
+        return (
+            "ROLE: You are Dengi Orchestrator. Decide which specialist should handle the log.\n\n"
+            "[LOG EVENT]\n"
+            f"{log}\n\n"
+            "[INSTRUCTION]\n"
+            "Select exactly ONE of: backend, frontend, infra.\n"
+            f"{JSON_DECISION_SCHEMA}"
+        )
 
-    def scan_logs(self) -> str:
-        """Reads the log file and returns its contents."""
-        if not os.path.exists(self.log_path):
-            return ""
-        with open(self.log_path, 'r') as f:
-            return f.read()
-
-    def extract_errors(self, logs: str) -> List[str]:
-        """Extracts lines that contain errors or exceptions."""
-        pattern = re.compile(r"(ERROR: .*|Exception: .*|Traceback.*|TypeError: .*|ReferenceError: .*)")
-        return pattern.findall(logs)
-
-    def classify_error(self, error: str) -> str:
-        """Classifies which sub-agent should handle the error."""
-        lower = error.lower()
-        if 'database' in lower or 'sql' in lower:
-            return 'backend'
-        elif 'ui' in lower or 'render' in lower or 'html' in lower:
-            return 'frontend'
-        elif 'timeout' in lower or 'docker' in lower or 'network' in lower:
-            return 'infra'
-        else:
-            return 'backend'  # default for demo
-
-    def handle_error(self, error: str) -> Dict[str, Any]:
-        """Routes the error to the appropriate sub-agent."""
-        agent_type = self.classify_error(error)
-        handler = self.sub_agents.get(agent_type, self._mock_backend_agent)
-        result = handler(error)
-        return {
-            'error': error,
-            'agent': agent_type,
-            'response': result
-        }
-
-    def run_cycle(self) -> Dict[str, Any]:
-        """Main orchestrator function — one cycle of scanning and routing errors."""
-        logs = self.scan_logs()
-        if not logs:
-            return {'status': 'no_logs_found', 'timestamp': time.time()}
-
-        errors = self.extract_errors(logs)
-        if not errors:
-            return {'status': 'no_errors_found', 'timestamp': time.time()}
-
-        actions = [self.handle_error(err) for err in errors]
-
-        report = {
-            'timestamp': time.time(),
-            'error_count': len(errors),
-            'actions': actions
-        }
-
-        # Save structured report for debugging/demo
-        out_path = os.path.join(os.path.dirname(self.log_path), 'dengi_report.json')
-        with open(out_path, 'w') as f:
-            json.dump(report, f, indent=2)
-
-        return report
+    def _build_patch_prompt(self, decision: str, log: str) -> str:
+        # Tailor a tiny bit by domain
+        focus = {
+            "backend": "server, database, API handlers, business logic",
+            "frontend": "UI components, rendering, client-side JS/TS",
+            "infra": "network, timeouts, container/deployment, service config"
+        }.get(decision, "the relevant code")
+        return (
+            f"ROLE: You are the {decision} specialist. Focus on {focus}.\n\n"
+            "[LOG EVENT]\n"
+            f"{log}\n\n"
+            "[INSTRUCTION]\n"
+            "Produce a concrete patch plan the dev can apply. If you emit a unified diff, ensure paths are correct.\n"
+            f"{JSON_PATCH_SCHEMA}"
+        )
 
     # ---------------------------
-    # Mock Sub-Agents (Simplified)
+    # Runner calling (ADK-version tolerant)
     # ---------------------------
+    async def _call_runner(self, runner, message_text: str) -> str:
+        """
+        Calls a Runner with a proper ADA A2K message object and collects text output.
+        Works across versions that return async generators, sync generators, or awaitables.
+        """
+        content = types.Content(role="user", parts=[types.Part(text=message_text)])
+        stream = runner.run(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            new_message=content
+        )
 
-    def _mock_backend_agent(self, error: str) -> Dict[str, str]:
-        return {
-            'action': 'analyze_backend_error',
-            'summary': f'Suggest patch for backend issue: {error[:60]}...'
-        }
+        # Case A: async generator
+        if hasattr(stream, "__aiter__"):
+            buf = []
+            async for ev in stream:
+                txt = self._event_text(ev)
+                if txt:
+                    buf.append(txt)
+            return "".join(buf)
 
-    def _mock_frontend_agent(self, error: str) -> Dict[str, str]:
-        return {
-            'action': 'fix_frontend_render',
-            'summary': f'Suggest UI patch for: {error[:60]}...'
-        }
+        # Case B: awaitable
+        if hasattr(stream, "__await__"):
+            result = await stream
+            # Single event/object
+            txt = self._event_text(result)
+            if txt:
+                return txt
+            # Or iterable of events/objects
+            try:
+                return "".join(filter(None, (self._event_text(e) for e in result)))
+            except TypeError:
+                return str(result or "")
 
-    def _mock_infra_agent(self, error: str) -> Dict[str, str]:
-        return {
-            'action': 'restart_container_or_optimize_timeout',
-            'summary': f'Handle infra issue: {error[:60]}...'
-        }
+        # Case C: sync generator / iterable
+        buf = []
+        try:
+            for ev in stream:
+                txt = self._event_text(ev)
+                if txt:
+                    buf.append(txt)
+            return "".join(buf)
+        except TypeError:
+            return str(stream or "")
 
+    def _event_text(self, ev: Any) -> str:
+        # Preferred: .output_text
+        if hasattr(ev, "output_text") and ev.output_text:
+            return ev.output_text
 
-if __name__ == "__main__":
-    # Example usage
-    orchestrator = OrchestratorAgent(
-        codebase_path="../webapp",
-        log_path="../webapp/logs/app.log"
-    )
-    result = orchestrator.run_cycle()
-    print(json.dumps(result, indent=2))
+        # Fallback: content.parts[].text
+        content = getattr(ev, "content", None)
+        if content and hasattr(content, "parts"):
+            texts = []
+            for p in getattr(content, "parts", []) or []:
+                t = getattr(p, "text", None)
+                if t:
+                    texts.append(t)
+            if texts:
+                return "".join(texts)
+
+        # Last resort: stringified
+        return ev if isinstance(ev, str) else ""
+
+    # ---------------------------
+    # JSON helpers
+    # ---------------------------
+    def _parse_decision(self, raw: str) -> Optional[str]:
+        data = self._safe_json(raw)
+        if not isinstance(data, dict):
+            return None
+        decision = str(data.get("decision", "")).strip().lower()
+        if decision in ("backend", "frontend", "infra"):
+            return decision
+        # tiny normalization if model adds punctuation etc
+        decision = re.split(r"[^a-z]+", decision)[0]
+        return decision if decision in ("backend", "frontend", "infra") else None
+
+    def _safe_json(self, raw: str) -> Optional[Dict[str, Any]]:
+        """
+        Lenient loader: handles models that wrap JSON in backticks or add text.
+        """
+        if not raw:
+            return None
+        raw = raw.strip()
+
+        # Remove markdown fences if present
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+
+        # Extract first JSON object if extra chatter exists
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        snippet = raw[start : end + 1]
+
+        try:
+            return json.loads(snippet)
+        except Exception:
+            return None

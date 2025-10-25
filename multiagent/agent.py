@@ -1,39 +1,17 @@
-# Root Dengi setup using Google ADA A2K
-
+# agent.py
 from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
-from google.adk.sessions import InMemorySessionService
-from google.adk.runners import Runner
-from google.genai import types
-from orcAgent import OrchestratorAgent
 
-import warnings
-import logging
-import asyncio
-import os
 
-warnings.filterwarnings("ignore")
-logging.basicConfig(level=logging.ERROR)
-print("ADA A2K libraries imported successfully.")
 
-# Define your root agent
+# Root orchestrator agent
 Dengi = Agent(
-    model='gemini-2.5-flash',
-    name='OrchestratorAgent',
-    description=(
-        "The central coordinator of Dengi's system. "
-        "It reads logs, classifies errors, and assigns them "
-        "to specialized agents such as backend, frontend, and infra."
-    ),
+    model="gemini-2.5-flash",
+    name="DengiOrchestrator",
+    description="Coordinates multiple specialized agents for debugging and analysis.",
     instruction=(
-        "When an error occurs, analyze the log context, "
-        "classify the error, and route it to the correct sub-agent."
-    ),
+        "Receive logs, classify issues, "
+        "and route them to the correct specialized agent: backend, frontend, or infra."
+    )
 )
 
-orch = OrchestratorAgent(codebase_path="../webapp", log_path="../webapp/logs/app.log")
-Dengi.add_tool(
-    name="run_orchestration_cycle",
-    description="Scans logs, classifies errors, and assigns them to the proper sub-agent.",
-    func=orch.run_cycle
-)
+print("✅ Dengi orchestrator initialized.")
