@@ -9,7 +9,7 @@ from collections import deque
 import os
 import threading
 import time
-from typing import Callable, Deque, Dict, Optional
+from typing import Callable, Deque, Dict, Iterable, Optional
 
 try:
     import docker
@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - docker is optional for linting environ
 
 from .rule_engine import RuleBasedClassifier, RuleMatch
 from .stacktrace import StackTraceExtractor
+from ..agents.runAgents import run_agents
 
 
 @dataclass
@@ -241,6 +242,12 @@ class DockerLogMonitor:
             f"{prefix} {event.timestamp.isoformat()} {event.container_name}:{event.stream}{rule} {event.text}{stack}",
             flush=True,
         )
+        try:
+            agent_result = run_agents(event.text)
+            if agent_result:
+                print(f"[AGENTS] {agent_result}", flush=True)
+        except Exception as exc:  # pragma: no cover - integration fallback
+            print(f"[AGENTS] Failed to run agents for {event.container_name}: {exc}", flush=True)
 
 
 def main() -> None:

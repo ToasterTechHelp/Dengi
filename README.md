@@ -24,4 +24,14 @@ By default the monitor:
 - Waits 10 seconds on startup before tailing logs so containers can finish booting.
 - Streams live stdout and stderr for each container (skips historical backlog).
 - Emits structured events via a configurable handler (defaults to printing error logs to stdout).
+- Forwards flagged errors to `agents.runAgents.run_agents` so the agent swarm can triage issues automatically.
 - Uses `RuleBasedClassifier` and `StackTraceExtractor`, which can be swapped or extended for more advanced logic.
+
+### Google ADK / Gemini credentials
+
+The agent runners rely on Google ADK’s latest (Oct 2025) guidance for the `google.genai.Client`. Before starting `python -m src.agents.runAgents` or the monitor, define either:
+
+- `GOOGLE_API_KEY` (or `GENAI_API_KEY`) for Gemini Developer API access, **or**
+- `GOOGLE_GENAI_USE_VERTEXAI=true` plus `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` (optionally `GOOGLE_VERTEX_PROJECT/LOCATION`, which will be promoted automatically).
+
+These variables can live in `.env`; `runAgents` loads them and raises a clear error if credentials are missing.
