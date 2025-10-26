@@ -85,6 +85,8 @@ By default, each hotfix run clones the target GitHub repo into a temporary direc
 
 The LLM agents now receive an abridged repository tree (up to two directory levels) pulled via the GitHub App credentials before proposing a fix, which helps them pick the right paths even when they have not seen the code before.
 
+When an error does not include explicit file paths, the workflow automatically pulls both backend *and* frontend “hot spot” files (even if the log came from just one container) and places their contents under `[RELEVANT FILE CONTENTS]` in the LLM prompt. Specialists use those snippets to emit the full updated file contents for each edit, which avoids bad diffs and ensures `git apply` never needs to guess about context.
+
 Example usage:
 
 ```python
@@ -127,3 +129,5 @@ python main.py
 Ensure your `.env` includes both the Google GenAI credentials (for the agents) *and* the GitHub App variables listed above. The script will continue running until interrupted (Ctrl+C), and every successful AI fix results in a new branch/PR for humans to review.
 
 `main.py` now runs in fail-fast mode by default: if the agent orchestrator or hotfix workflow hits a fatal error, the Docker log monitor shuts down and the process exits with a non-zero status. Set `DENGI_FAIL_FAST=false` if you prefer the legacy behavior where the service keeps running despite failures.
+
+To avoid spamming duplicate PRs for a noisy log, the `ContinuousHotfixPipeline` keeps a signature cache for each error (default 10-minute TTL). Adjust `DENGI_EVENT_TTL_SECONDS` if you want a longer or shorter cooldown before the same error can trigger another patch attempt.

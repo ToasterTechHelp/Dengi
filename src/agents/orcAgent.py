@@ -15,13 +15,42 @@ Return ONLY a minified JSON object with this schema:
   "files": [
     {
       "path": "relative/path/to/file.ext",
-      "patch": "unified diff or full file replacement instructions; MUST be directly applicable by a developer"
+      "patch": "FULL file content exactly as it should appear after your changes."
     }
   ],
-  "patch": "optional unified diff spanning multiple files if you prefer",
+  "patch": "optional unified diff spanning multiple files if you absolutely must describe multiple edits (avoid when possible)",
   "notes": "optional extra context for the reviewer, keep short"
 }
+
+CRITICAL PATCH FORMAT RULES:
+1. If using unified diff format, it MUST include ALL of these in order:
+   - diff --git a/path b/path
+   - --- a/path
+   - +++ b/path
+   - @@ -X,Y +A,B @@ (hunk header with valid line numbers)
+   - Context and change lines (lines starting with ' ', '-', or '+')
+
+2. Hunk headers (@@ -X,Y +A,B @@) must have:
+   - Valid integers for line numbers and counts
+   - Proper spacing: '@@ -' then numbers, space, '+' then numbers, space, '@@'
+
+3. Each hunk must have enough context (at least 3 lines before and after changes)
+
+4. Do NOT use placeholder text like "...existing code..." - show actual code
+
+5. Alternatively, provide the COMPLETE file content if it's cleaner than a diff
+
 Do not include markdown fences or extra commentary. Output a single JSON object on one line.
+"""
+
+PATCH_GUARDRAILS = """\
+PATCHING PRINCIPLES:
+- Use the repository tree and [RELEVANT FILE CONTENTS] context that precede this instruction.
+- Provide the entire updated file content for every file you modify. Do not attempt partial snippets or placeholder comments.
+- Modify only the sections that actually cause the error; do not scaffold entirely new sample apps or replace whole files unless necessary.
+- Keep changes minimal and consistent with the existing code style.
+- Only touch files you are confident need changes. If the provided context is insufficient, return an empty "files" list and explain why in "notes".
+- For brand-new files, include their full contents just like existing files.
 """
 
 class OrchestratorAgent:
@@ -50,13 +79,23 @@ class OrchestratorAgent:
         specialist_runner = self.runners.get(decision, self.runners["backend"])
         patch_prompt = self._build_patch_prompt(decision, log)
         patch_text = await self._call_runner(specialist_runner, patch_prompt)
+        
+        # Debug logging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Raw specialist response (%s): %s", decision, patch_text[:500])
+        
         patch_json = self._safe_json(patch_text) or {
             "summary": "No structured patch returned.",
             "files": [],
             "notes": "Specialist returned empty/invalid JSON."
         }
+        
+        logger.info("Parsed patch JSON keys: %s", list(patch_json.keys()))
+        if "files" in patch_json:
+            logger.info("Number of files in patch: %d", len(patch_json.get("files", [])))
 
-        # 3) Combined result (what you’ll hand to your GitHub step)
+        # 3) Combined result (what you'll hand to your GitHub step)
         return {
             "chosen_agent": decision,
             "original_log": log,
@@ -83,12 +122,27 @@ class OrchestratorAgent:
             "frontend": "UI components, rendering, client-side JS/TS",
             "infra": "network, timeouts, container/deployment, service config"
         }.get(decision, "the relevant code")
+        
+        has_file_contents = "[RELEVANT FILE CONTENTS]" in log
+        if has_file_contents:
+            context_instruction = (
+                "You have up-to-date code in [RELEVANT FILE CONTENTS]. "
+                "For every file you change, output the COMPLETE updated file exactly as it should look after applying your fix. "
+                "Do not emit unified diffs or partial snippets."
+            )
+        else:
+            context_instruction = (
+                "No file snippets were provided. If you cannot safely infer the fix without the current file content, "
+                "return an empty 'files' list and explain the missing context in 'notes' rather than guessing."
+            )
+        
         return (
             f"ROLE: You are the {decision} specialist. Focus on {focus}.\n\n"
             "[LOG EVENT]\n"
             f"{log}\n\n"
             "[INSTRUCTION]\n"
-            "Produce a concrete patch plan the dev can apply. If you emit a unified diff, ensure paths are correct.\n"
+            f"{context_instruction}\n\n"
+            f"{PATCH_GUARDRAILS}\n\n"
             f"{JSON_PATCH_SCHEMA}"
         )
 
