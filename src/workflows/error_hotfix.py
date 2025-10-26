@@ -326,6 +326,8 @@ class ContinuousHotfixPipeline:
         dedupe_ttl: float = 600.0,
         fail_fast: bool = False,
         on_fatal: Optional[Callable[[BaseException], None]] = None,
+        stop_after_first_pr: bool = False,
+        on_stop_requested: Optional[Callable[[], None]] = None,
         repo_tree_depth: int = 2,
     ):
         load_dotenv()
@@ -345,6 +347,9 @@ class ContinuousHotfixPipeline:
         self.fail_fast = fail_fast
         self.on_fatal = on_fatal
         self.failed = False
+        self.stop_after_first_pr = stop_after_first_pr
+        self.on_stop_requested = on_stop_requested
+        self.stop_requested = False
         self.repo_tree_depth = repo_tree_depth
         self._repo_tree_cache: Optional[str] = None
         self._repo_tree_lock = threading.Lock()
@@ -355,6 +360,9 @@ class ContinuousHotfixPipeline:
             return
         if self.fail_fast and self.failed:
             logger.info("Fail-fast is enabled; ignoring event from %s after fatal error.", event.container_name)
+            return
+        if self.stop_after_first_pr and self.stop_requested:
+            logger.info("Stop-after-first-PR is enabled; ignoring event from %s", event.container_name)
             return
         signature = self._event_signature(event)
         now = time.monotonic()
@@ -432,6 +440,11 @@ class ContinuousHotfixPipeline:
                 result["branch"],
                 len(result["changed_files"]),
             )
+            if self.stop_after_first_pr:
+                self.stop_requested = True
+                logger.info("Stop-after-first-PR enabled; requesting shutdown after PR #%s", result["pr_number"])
+                if self.on_stop_requested:
+                    self.on_stop_requested()
             with self.dedupe_lock:
                 self.recent_prs[signature] = time.monotonic()
 

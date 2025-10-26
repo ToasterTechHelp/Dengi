@@ -131,3 +131,5 @@ Ensure your `.env` includes both the Google GenAI credentials (for the agents) *
 `main.py` now runs in fail-fast mode by default: if the agent orchestrator or hotfix workflow hits a fatal error, the Docker log monitor shuts down and the process exits with a non-zero status. Set `DENGI_FAIL_FAST=false` if you prefer the legacy behavior where the service keeps running despite failures.
 
 To avoid spamming duplicate PRs for a noisy log, the `ContinuousHotfixPipeline` keeps a signature cache for each error (default 10-minute TTL). Adjust `DENGI_EVENT_TTL_SECONDS` if you want a longer or shorter cooldown before the same error can trigger another patch attempt.
+
+If you only need a single automated fix per run, set (or leave the default) `DENGI_STOP_AFTER_FIRST_PR=true`. The monitor shuts down after the first PR is created so it won’t keep opening new branches in a loop. Set it to `false` to let the pipeline continue processing subsequent errors.
