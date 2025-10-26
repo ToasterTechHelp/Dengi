@@ -20,7 +20,7 @@ print(gh.tree(ref="main", as_text_tree=True, max_depth=3))
 readme = gh.read_file("README.md", ref="main", as_text=True)
 
 # 3) Create a branch, commit multiple files, open a PR
-branch = gh.create_branch(new_branch="chore/boot-scan-2025124125125", base_ref="main")
+branch = gh.create_branch(new_branch="chore/williamdouglasthird", base_ref="main")
 commit_sha = gh.commit_files(
     branch=branch,
     message="Initial boot scan artifacts",
