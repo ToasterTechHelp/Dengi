@@ -7,7 +7,7 @@ import subprocess
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Deque, Dict, Iterable, Optional
+from typing import Callable, Deque, Dict, Iterable, Optional
 
 from dotenv import load_dotenv
 
@@ -110,11 +110,20 @@ class ContinuousHotfixPipeline:
     Consumes LogEvent inputs, calls the LLM orchestrator, and opens GitHub PRs via the hotfix workflow.
     """
 
-    def __init__(self, *, repo_path: Optional[Path] = None, dedupe_window: int = 32):
+    def __init__(
+        self,
+        *,
+        repo_path: Optional[Path] = None,
+        dedupe_window: int = 32,
+        fail_fast: bool = False,
+        on_fatal: Optional[Callable[[BaseException], None]] = None,
+    ):
         load_dotenv()
         self.repo_path = repo_path
         self.recent_errors: Deque[str] = deque(maxlen=dedupe_window)
         self.lock = threading.Lock()
+        self.fail_fast = fail_fast
+        self.on_fatal = on_fatal
 
     def handle_event(self, event: LogEvent) -> None:
         if not event.is_error:
@@ -137,8 +146,9 @@ class ContinuousHotfixPipeline:
         with self.lock:
             try:
                 agent_payload = run_agents(self._format_agent_prompt(event))
-            except Exception:
+            except Exception as exc:
                 logger.exception("Failed to run LLM orchestrator for %s", event.container_name)
+                self._handle_failure(exc)
                 return
 
             if not isinstance(agent_payload, dict):
@@ -167,8 +177,9 @@ class ContinuousHotfixPipeline:
                     apply_changes=_apply,
                     repo_path=self.repo_path,
                 )
-            except HotfixError:
+            except HotfixError as exc:
                 logger.exception("Hotfix workflow failed for %s", event.container_name)
+                self._handle_failure(exc)
                 return
 
             logger.info(
@@ -177,6 +188,14 @@ class ContinuousHotfixPipeline:
                 result["branch"],
                 len(result["changed_files"]),
             )
+
+    def _handle_failure(self, exc: BaseException) -> None:
+        if not self.fail_fast:
+            return
+        if self.on_fatal:
+            self.on_fatal(exc)
+        else:
+            raise exc
 
     @staticmethod
     def _format_agent_prompt(event: LogEvent) -> str:

@@ -27,6 +27,41 @@ By default the monitor:
 - Forwards flagged errors to `agents.runAgents.run_agents` so the agent swarm can triage issues automatically.
 - Uses `RuleBasedClassifier` and `StackTraceExtractor`, which can be swapped or extended for more advanced logic.
 
+### Run the platform inside Docker
+
+The repository now ships with a `Dockerfile` plus a `compose.yaml` so you can keep the monitor, orchestrator, and GitHub workflow inside an isolated container while still reading logs from any other Docker environment.
+
+```bash
+# Build the image (optional when using docker compose up --build)
+docker build -t dengi:latest .
+
+# Linux/macOS (socket under /var/run/docker.sock)
+docker compose up --build dengi
+```
+
+Important mounts/environment variables:
+
+- `DOCKER_SOCKET_PATH` (defaults to `/var/run/docker.sock`) lets you point the container at any local socket path. Windows users outside WSL can instead run `docker run` with `--mount type=npipe,source=//./pipe/docker_engine,target=//./pipe/docker_engine`.
+- `DOCKER_HOST`, `DOCKER_TLS_VERIFY`, and `DOCKER_CERT_PATH` are forwarded so you can target remote Docker daemons exactly the same way you would on the host. Mount your TLS directory (for example `-v $HOME/.docker:/certs/docker:ro`) and set `DOCKER_CERT_PATH=/certs/docker` if you rely on client certificates.
+- `.:/app` keeps your working tree and `.git` metadata available inside the container so the hotfix workflow can continue creating and pushing branches.
+- `.env` is loaded by Compose so Google/GitHub credentials are still available without baking them into the image.
+
+`docker run` usage mirrors the compose file:
+
+```bash
+docker run --rm \
+  --env-file .env \
+  -e DOCKER_HOST \
+  -e DOCKER_TLS_VERIFY \
+  -e DOCKER_CERT_PATH=/certs/docker \
+  -v "$(pwd)":/app \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$HOME/.docker":/certs/docker:ro \
+  dengi:latest
+```
+
+To read logs from multiple environments at once, start additional containers with different names and `DOCKER_HOST` values (or sockets). Each instance of `DockerLogMonitor` will stream from the daemon it is pointed at, so you can run parallel monitors for staging, production, and local workloads.
+
 ### Google ADK / Gemini credentials
 
 The agent runners rely on Google ADK’s latest (Oct 2025) guidance for the `google.genai.Client`. Before starting `python -m src.agents.runAgents` or the monitor, define either:
@@ -43,6 +78,10 @@ These variables can live in `.env`; `runAgents` loads them and raises a clear er
 - `GITHUB_REPO_OWNER` (or `GITHUB_ORG`)
 - `GITHUB_REPO_NAME` (or `GITHUB_REPO`)
 - optional: `GITHUB_BASE_BRANCH` (default `main`) and `GITHUB_REMOTE_NAME` (default `origin`)
+- optional: `GITHUB_REPO_CLONE_URL` if you need to override the default `https://github.com/<owner>/<repo>.git` (useful for private repos or SSH URLs)
+- optional: `HOTFIX_LOCAL_REPO` if you want to reuse an existing working tree instead of the default throwaway clone
+
+By default, each hotfix run clones the target GitHub repo into a temporary directory, applies the AI patch there, pushes the branch/PR via the GitHub App API, and then deletes the workspace. Your checked-out repository is never mutated. Supplying `HOTFIX_LOCAL_REPO` (or the `repo_path` argument when calling `run_hotfix_workflow`) opts back into a persistent workspace if you need one.
 
 Example usage:
 
@@ -84,3 +123,5 @@ python main.py
 ```
 
 Ensure your `.env` includes both the Google GenAI credentials (for the agents) *and* the GitHub App variables listed above. The script will continue running until interrupted (Ctrl+C), and every successful AI fix results in a new branch/PR for humans to review.
+
+`main.py` now runs in fail-fast mode by default: if the agent orchestrator or hotfix workflow hits a fatal error, the Docker log monitor shuts down and the process exits with a non-zero status. Set `DENGI_FAIL_FAST=false` if you prefer the legacy behavior where the service keeps running despite failures.

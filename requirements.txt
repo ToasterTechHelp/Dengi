@@ -3,4 +3,5 @@ PyJWT
 cryptography
 python-dotenv
 docker
-docker
+google-adk
+google-genai
