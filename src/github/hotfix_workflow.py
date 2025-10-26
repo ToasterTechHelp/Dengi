@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -114,21 +115,26 @@ class HotfixWorkflow:
     def _ensure_workspace(self, repo_path: Optional[Path]) -> None:
         if repo_path:
             repo_path = repo_path.expanduser().resolve()
-            repo_path.mkdir(parents=True, exist_ok=True)
+            repo_path.parent.mkdir(parents=True, exist_ok=True)
             self._set_workspace(repo_path, None)
             return
-        tmp = tempfile.TemporaryDirectory(prefix="dengi-hotfix-")
-        self._set_workspace(Path(tmp.name), tmp.cleanup)
+        tmp_path = Path(tempfile.mkdtemp(prefix="dengi-hotfix-"))
+        cleanup = lambda: shutil.rmtree(tmp_path, ignore_errors=True)
+        # Remove the auto-created directory so `git clone` can recreate it.
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        self._set_workspace(tmp_path, cleanup)
 
     def _clone_base_repo(self) -> None:
         repo_path = self._require_repo_path()
-        if repo_path.exists() and any(repo_path.iterdir()):
-            # If the caller asked for a persistent repo path, make sure they gave us a git repo.
-            if not (repo_path / ".git").exists():
+        if repo_path.exists():
+            git_dir = repo_path / ".git"
+            if git_dir.exists():
+                return
+            if any(repo_path.iterdir()):
                 raise HotfixError(
                     f"Workspace {repo_path} is not empty and does not contain a Git repository."
                 )
-            return
+            repo_path.rmdir()
         cmd = [
             "git",
             "clone",
@@ -144,11 +150,14 @@ class HotfixWorkflow:
             raise HotfixError(f"Unable to clone repo from {self.config.clone_url}: {detail}")
         if self.config.remote_name != "origin":
             self._git(["remote", "rename", "origin", self.config.remote_name])
+        self._configure_repo()
 
     def _ensure_repo_ready(self) -> None:
         repo_path = self._require_repo_path()
         if not (repo_path / ".git").exists():
             self._clone_base_repo()
+        else:
+            self._configure_repo()
         self.sync_to_remote_main()
 
     # ---------- git helpers ----------
@@ -278,6 +287,24 @@ class HotfixWorkflow:
             }
         finally:
             self._clear_workspace()
+
+    def _configure_repo(self) -> None:
+        repo_path = self._require_repo_path()
+        for key, value in (("core.ignorecase", "true"),):
+            proc = subprocess.run(
+                ["git", "config", key, value],
+                cwd=repo_path,
+                text=True,
+                capture_output=True,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "Unable to set git config %s=%s in %s: %s",
+                    key,
+                    value,
+                    repo_path,
+                    proc.stderr.strip() or proc.stdout.strip(),
+                )
 
 
 def run_hotfix_workflow(

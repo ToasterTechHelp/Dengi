@@ -31,13 +31,18 @@ def main() -> int:
     fail_fast = _truthy(os.getenv("DENGI_FAIL_FAST"), default=True)
     fatal_event = threading.Event()
     fatal_errors: list[BaseException] = []
+    monitor_ref: DockerLogMonitor | None = None
 
     def _record_fatal(exc: BaseException) -> None:
         fatal_errors.append(exc)
         fatal_event.set()
+        if monitor_ref:
+            logger.error("Fatal error encountered, stopping monitor: %s", exc)
+            monitor_ref.stop()
 
     pipeline = ContinuousHotfixPipeline(fail_fast=fail_fast, on_fatal=_record_fatal)
     monitor = DockerLogMonitor(event_handler=pipeline.handle_event)
+    monitor_ref = monitor
     monitor.start()
     logger.info("Continuous hotfix pipeline is running. Press Ctrl+C to stop.")
 

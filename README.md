@@ -83,6 +83,8 @@ These variables can live in `.env`; `runAgents` loads them and raises a clear er
 
 By default, each hotfix run clones the target GitHub repo into a temporary directory, applies the AI patch there, pushes the branch/PR via the GitHub App API, and then deletes the workspace. Your checked-out repository is never mutated. Supplying `HOTFIX_LOCAL_REPO` (or the `repo_path` argument when calling `run_hotfix_workflow`) opts back into a persistent workspace if you need one.
 
+The LLM agents now receive an abridged repository tree (up to two directory levels) pulled via the GitHub App credentials before proposing a fix, which helps them pick the right paths even when they have not seen the code before.
+
 Example usage:
 
 ```python
