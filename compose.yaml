@@ -1,0 +1,21 @@
+services:
+  dengi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dengi:latest
+    env_file:
+      - .env
+    environment:
+      DOCKER_HOST: ${DOCKER_HOST:-}
+      DOCKER_TLS_VERIFY: ${DOCKER_TLS_VERIFY:-}
+      DOCKER_CERT_PATH: ${DOCKER_CERT_PATH:-}
+    volumes:
+      - type: bind
+        source: .
+        target: /app
+      - type: bind
+        source: ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        read_only: true
+    restart: unless-stopped
